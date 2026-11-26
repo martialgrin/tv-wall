@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Added to the iPhone home screen, it opens full-screen like an app. -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="TV Wall">
+  <meta name="theme-color" content="#0e1014">
+  <link rel="apple-touch-icon" href="/remote-icon.png">
+  <title>TV Wall Remote</title>
+  <link rel="stylesheet" href="/remote.css">
+</head>
+<body>
+  <header class="bar">
+    <h1>TV Wall</h1>
+    <span id="conn" class="conn">Connecting…</span>
+  </header>
+
+  <main>
+    <section class="card sound-card">
+      <button type="button" id="sound" class="sound-toggle" aria-pressed="false">
+        <span class="icon" aria-hidden="true"></span>
+        <span class="label">Sound</span>
+      </button>
+      <p id="sound-hint" class="hint"></p>
+      <div id="sound-tvs" class="chips" role="group" aria-label="TVs that play sound"></div>
+    </section>
+
+    <section class="card">
+      <div class="segmented" role="radiogroup" aria-label="Mode">
+        <button type="button" role="radio" data-mode="individual">Expo</button>
+        <button type="button" role="radio" data-mode="all">Same video</button>
+      </div>
+      <p id="mode-hint" class="hint"></p>
+    </section>
+
+    <section>
+      <h2>Play on all TVs</h2>
+      <div id="videos" class="videos"></div>
+    </section>
+
+    <button type="button" id="restart" class="secondary">Restart in sync</button>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/remote.js"></script>
+</body>
+</html>

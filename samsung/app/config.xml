@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- NOT USED: the wall now plays on Raspberry Pis (README, section 3). Kept for reference.
+     TV Wall app for Samsung signage displays. Build and sign it with samsung/build.sh. -->
+<widget xmlns="http://www.w3.org/ns/widgets" xmlns:tizen="http://tizen.org/ns/widgets" id="http://tvwall.local/samsung" version="1.0.0" viewmodes="maximized">
+  <tizen:application id="TVWallEcal.TVWall" package="TVWallEcal" required_version="2.3"/>
+  <tizen:profile name="tv-samsung"/>
+  <name>TVWall</name>
+  <description>Plays the TV Wall videos in sync, through Samsung's own video player.</description>
+  <content src="index.html"/>
+  <icon src="icon.png"/>
+  <!-- The player code and the videos come from the TV Wall server on the local network. -->
+  <access origin="*" subdomains="true"/>
+  <feature name="http://tizen.org/feature/screen.size.all"/>
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/avplay"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.inputdevice"/>
+  <tizen:privilege name="http://tizen.org/privilege/tv.audio"/>
+  <tizen:setting screen-orientation="landscape" context-menu="disable" background-support="disable" encryption="disable" install-location="auto" hwkey-event="enable"/>
+</widget>

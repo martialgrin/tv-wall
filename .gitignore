@@ -1,0 +1,13 @@
+# The videos are too big for git: copy them to each machine separately.
+videos/
+originals/
+
+# Made by the server as it runs
+thumbs/
+state.json
+
+# Built and signed by samsung/build.sh
+samsung/TVWall.wgt
+
+.DS_Store
+node_modules/

@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TV Wall</title>
+  <link rel="stylesheet" href="/control.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand">
+      <h1>TV Wall</h1>
+      <span id="conn" class="conn">Connecting…</span>
+    </div>
+
+    <div class="mode" role="radiogroup" aria-label="Mode">
+      <button type="button" role="radio" data-mode="individual">Expo: own videos per TV</button>
+      <button type="button" role="radio" data-mode="all">Same video on all TVs</button>
+    </div>
+
+    <div class="actions">
+      <button type="button" data-cmd="fill" title="TV 1 plays video 1, TV 2 plays video 2…">Fill in order</button>
+      <button type="button" data-cmd="restart" title="Restart every TV from the beginning, together">Restart in sync</button>
+      <button type="button" data-cmd="rotateAll" title="Turn the picture on every TV a quarter turn clockwise">Rotate all</button>
+      <button type="button" data-cmd="identify" title="Show each TV's number on its screen for 5 seconds">Identify TVs</button>
+      <button type="button" data-cmd="reload" title="Reload the player page on every TV">Reload TVs</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="all-panel" class="all-panel" hidden>
+      <label for="all-video">All TVs play</label>
+      <select id="all-video"></select>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Sound on this computer</h2>
+        <span class="muted">Plays a TV's sound here, in sync with the wall. Choose the soundbar in the computer's sound settings.</span>
+      </div>
+      <div class="sound-panel">
+        <label for="sound-source">Sound of</label>
+        <select id="sound-source"></select>
+        <button type="button" id="sound-play">Play</button>
+        <label class="sound-setting">Volume <input id="sound-volume" type="range" min="0" max="1" step="0.05" value="1"></label>
+        <label class="sound-setting" title="Bluetooth soundbars play about 150–250 ms late, AirPlay about 2000 ms. A cable (HDMI, optical, jack) is about 0.">
+          Soundbar delay <input id="sound-delay" type="number" min="0" max="5000" step="10" value="0"> ms
+        </label>
+        <p id="sound-status" class="status"></p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Screens</h2>
+        <span id="online-count" class="muted"></span>
+        <span id="sound-master" class="sound-master" hidden>
+          All TV sound is off (phone remote) <button type="button" id="sound-master-on">Turn on</button>
+        </span>
+      </div>
+      <div id="screens" class="screens"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>Videos</h2>
+        <span class="muted">Click a video to play it on all TVs</span>
+      </div>
+      <div id="library" class="library"></div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>TV addresses</h2>
+        <span class="muted">Open one on each TV, in the display's browser or kiosk app</span>
+      </div>
+      <div id="addresses" class="addresses"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/schedule.js"></script>
+  <script src="/control.js"></script>
+  <script src="/computer-sound.js"></script>
+</body>
+</html>

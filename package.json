@@ -1,0 +1,13 @@
+{
+  "name": "tv-wall",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Play one video per TV, or the same video on all TVs, in sync over the local network.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
