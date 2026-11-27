@@ -52,6 +52,27 @@
   var startLead = 0.05;  // starting takes time too, so press play this early: learned at each start from the beginning
   var nextSeekAt = 0;
 
+  // For the panel's crash test: counters since this page loaded, and what happened recently.
+  var pageId = Math.random().toString(36).slice(2, 10); // new at each page load: shows when a TV restarts
+  var health = {
+    ok: 0, failed: 0, rtt: 0, clockRtt: 0, // reports that got through or not, and how long the last one took (ms)
+    stalls: 0, fallbacks: 0, loadTimeouts: 0, mediaErrors: 0, lateStarts: 0, clockRejected: 0, liveErrors: 0,
+  };
+  var notes = [];      // { n, t, m, w }: recent events, sent until the server has them
+  var noteCount = 0;
+  var notesSent = 0;   // the server has every event up to this number
+  var failedInARow = 0;
+
+  function note(message, warn) {
+    noteCount++;
+    notes.push({ n: noteCount, t: Math.round(clockOffset === null ? Date.now() : serverNow()), m: message, w: warn ? 1 : 0 });
+    if (notes.length > 30) notes.shift();
+  }
+
+  function videoName(url) {
+    return decodeURIComponent(url.split('?')[0].split('/').pop());
+  }
+
   function serverNow() {
     return performance.now() + clockOffset;
   }
@@ -92,6 +113,12 @@
       clockOffset = best.offset;
       clockRtt = best.rtt;
       clockAt = performance.now();
+      health.clockRtt = Math.round(best.rtt);
+    } else if (best) {
+      health.clockRejected++;
+      note('Clock sync skipped: the fastest reply took ' + Math.round(best.rtt) + ' ms', true);
+    } else {
+      note('Clock sync: no reply from the server', true);
     }
   }
 
@@ -171,7 +198,7 @@
       clearTimeout(pending.timer);
       unload(pending.el);
     }
-    pending = { target: target, el: null, positioned: false, started: false, retryAt: 0 };
+    pending = { target: target, el: null, positioned: false, started: false, retryAt: 0, preparedAt: performance.now() };
     if (!target.url) return; // black screen, switched at startAt by the tick
     var el;
     if (oneVideo) {
@@ -222,14 +249,19 @@
     k.loading = true;
     var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, KEEP_TIMEOUT) : null;
+    var t0 = performance.now();
     fetch(want, ctrl ? { signal: ctrl.signal } : {}).then(function (res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res.blob();
     }).then(function (blob) {
       k.blobUrl = URL.createObjectURL(blob);
-    }).catch(function () {
+      var s = (performance.now() - t0) / 1000;
+      note('Kept ' + videoName(want) + ' in memory: ' + Math.round(blob.size / 1e6) + ' MB in ' + s.toFixed(1) + ' s (' +
+        Math.round((blob.size * 8) / 1e6 / Math.max(s, 0.001)) + ' Mbit/s)');
+    }).catch(function (err) {
       k.failures++;
       k.retryAt = performance.now() + 60000;
+      note('Could not keep ' + videoName(want) + ' in memory (' + (err && (err.name === 'AbortError' ? 'took over ' + KEEP_TIMEOUT / 60000 + ' min' : err.message || err.name)) + ')', true);
     }).then(function () {
       clearTimeout(timer);
       k.loading = false;
@@ -262,6 +294,8 @@
     // The next round of the video on screen isn't loaded in time (a weak link, or still downloading
     // the first): go back to the start of the one on screen instead, as a single video used to loop.
     if (active && active.target.url === t.url && now > t.startAt + 500 && p.el.readyState < 3) {
+      health.fallbacks++;
+      note('Next round of ' + t.video + ' not loaded in time: looped the one on screen', true);
       unload(p.el);
       pending = null;
       active.target = t;
@@ -275,6 +309,8 @@
 
     if (active && now > t.startAt + LOAD_TIMEOUT) {
       // Some TVs can decode only one video at a time: stop the old one, then load the new one again.
+      health.loadTimeouts++;
+      note((t.video || 'Black screen') + ' not playing ' + LOAD_TIMEOUT / 1000 + ' s after its start: loading it again on its own', true);
       unload(active.el);
       active = null;
       prepare(t);
@@ -330,6 +366,15 @@
     var p = pending;
     pending = null;
     var old = active;
+    var loading = ', loading took ' + ((performance.now() - p.preparedAt) / 1000).toFixed(1) + ' s';
+    if (p.fromStart) {
+      // A start this late shows (about 9 frames); smaller ones are caught up within a second or two.
+      var late = Math.round(serverNow() - p.target.startAt);
+      if (late > 300) health.lateStarts++;
+      note('Started ' + p.target.video + (late > 300 ? ' ' + late + ' ms late' : ' on time (' + late + ' ms)') + loading, late > 300);
+    } else {
+      note('Joined ' + p.target.video + ' at ' + el.currentTime.toFixed(1) + ' s' + loading);
+    }
     // Started from the beginning: measure how late it got going, once it has settled.
     active = { el: el, target: p.target, learnAt: p.fromStart ? performance.now() + 300 : 0 };
     el.classList.add('on');
@@ -366,6 +411,8 @@
     if (el.currentTime !== stall.time) {
       stall = { time: el.currentTime, since: performance.now() };
     } else if (performance.now() - stall.since > (el.seeking ? SEEK_TIMEOUT : STALL_TIMEOUT) && !pending) {
+      health.stalls++;
+      note(target.video + ' stalled at ' + el.currentTime.toFixed(1) + ' s' + (el.seeking ? ' while jumping' : '') + ': reloading it', true);
       lastError = 'Video stalled, reloading';
       prepare(active.target);
       return;
@@ -424,6 +471,7 @@
       if (!target) return;
       if (el.getAttribute('src').indexOf('blob:') === 0) {
         // This browser can't play a video from memory: stream it from the server.
+        if (!keepBroken) note('This TV can\'t play a video from memory: streaming instead', true);
         keepBroken = true;
         if ((pending && pending.target === target) || (active && active.target === target && !pending)) prepare(target);
         return;
@@ -435,6 +483,8 @@
       lastError = 'Can\'t play ' + target.video + ': ' + (MEDIA_ERRORS[code] || 'unknown error') +
         (err && err.message ? ' (' + err.message + ')' : '') +
         (unplayable ? '. Convert it with convert.sh.' : '. Retrying.');
+      health.mediaErrors++;
+      note(lastError, true);
       setTimeout(function () {
         var stillWanted = (pending && pending.target === target) || (active && active.target === target && !pending);
         if (stillWanted) prepare(target);
@@ -502,28 +552,62 @@
         ', pixel ratio ' + window.devicePixelRatio,
         'in memory: ' + (keepBroken ? 'not supported' : Object.keys(kept).map(function (url) {
           var k = kept[url];
-          return decodeURIComponent(url.split('?')[0].split('/').pop()) + (k.blobUrl ? '' : k.loading ? ' (downloading)' : ' (failed ' + k.failures + 'x)');
+          return videoName(url) + (k.blobUrl ? '' : k.loading ? ' (downloading)' : ' (failed ' + k.failures + 'x)');
         }).join(', ') || 'nothing'),
       ],
+      page: pageId,
+      up: Math.round(performance.now() / 1000),
+      health: healthNow(el),
+      events: notes.filter(function (e) { return e.n > notesSent; }),
     };
     // The reply is the current state: this is how commands reach TVs whose live connection holds events back.
     // One at a time: on a bad link, reports piling up would take the connections the video needs.
     if (!reportBusy) {
       reportBusy = true;
+      var t0 = performance.now();
+      var upTo = noteCount;
       fetchJson('/api/report', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       }, 5000).then(function (s) {
         connected = true;
+        health.ok++;
+        health.rtt = Math.round(performance.now() - t0);
+        notesSent = Math.max(notesSent, upTo);
+        if (failedInARow) note('Server reachable again after ' + failedInARow + ' failed reports');
+        failedInARow = 0;
         if (s && s.screens) onState(s);
-      }).catch(function () {
+      }).catch(function (err) {
         connected = false;
+        health.failed++;
+        failedInARow++;
+        if (failedInARow === 1) {
+          note('Lost the server: ' + (err && err.name === 'AbortError' ? 'no reply within 5 s' : 'no connection'), true);
+        }
       }).then(function () {
         reportBusy = false;
       });
     }
     updateHint();
+  }
+
+  // The counters, plus how many seconds of video are loaded ahead and how much memory the page uses.
+  function healthNow(el) {
+    var h = {};
+    for (var key in health) h[key] = health[key];
+    h.buf = 0;
+    try {
+      for (var i = 0; el && i < el.buffered.length; i++) {
+        if (el.buffered.start(i) <= el.currentTime + 0.1 && el.buffered.end(i) >= el.currentTime) {
+          h.buf = Math.round((el.buffered.end(i) - el.currentTime) * 10) / 10;
+        }
+      }
+    } catch (e) {
+      // Not available on this TV.
+    }
+    if (performance.memory) h.heapMB = Math.round(performance.memory.usedJSHeapSize / 1e6);
+    return h;
   }
 
   // ---------- On-screen messages ----------
@@ -576,6 +660,7 @@
       syncClock(); // the server may have restarted
     };
     events.onerror = function () {
+      health.liveErrors++;
       // Some TV browsers stop retrying after an error: open a new connection ourselves.
       if (events.readyState === 2) {
         events.close();
@@ -586,6 +671,7 @@
 
   showOverlay('TV ' + screenId, 3000);
   updateHint();
+  note('Page loaded');
   syncClock().then(function () {
     connect();
     setInterval(tick, 50);

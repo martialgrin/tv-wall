@@ -5,6 +5,7 @@ originals/
 # Made by the server as it runs
 thumbs/
 state.json
+logs/
 
 # Built and signed by samsung/build.sh
 samsung/TVWall.wgt

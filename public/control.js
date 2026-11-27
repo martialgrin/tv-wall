@@ -406,10 +406,15 @@ function renderStatus() {
 
     // A single video is kept in memory on the TV, so its rounds don't use the Wi-Fi.
     const memory = (s.log || []).find(line => line.startsWith('in memory: '));
+    // How well the TV reaches the server, since its page loaded.
+    const h = s.health;
+    const wifi = h && h.ok + h.failed
+      ? `\nServer replies in ${h.rtt} ms · ${Math.round((100 * h.failed) / (h.ok + h.failed))}% of reports lost since the page loaded`
+      : '';
 
     c.dot.className = `dot ${dot}`;
     c.dot.title = devices.length
-      ? `Connected from ${devices.join(', ')}${s.seekMs ? `\nJumps take about ${s.seekMs} ms` : ''}${s.startMs ? `\nStarts take about ${s.startMs} ms` : ''}${memory ? `\nVideo in memory: ${memory.slice('in memory: '.length)}` : ''}${s.agent ? `\n${s.agent}` : ''}`
+      ? `Connected from ${devices.join(', ')}${wifi}${s.seekMs ? `\nJumps take about ${s.seekMs} ms` : ''}${s.startMs ? `\nStarts take about ${s.startMs} ms` : ''}${memory ? `\nVideo in memory: ${memory.slice('in memory: '.length)}` : ''}${s.agent ? `\n${s.agent}` : ''}`
       : 'Not connected';
     c.badge.textContent = badge;
     c.bar.style.width = `${Math.min(100, pct)}%`;
@@ -417,6 +422,7 @@ function renderStatus() {
     if (c.status.innerHTML !== html) c.status.innerHTML = html;
   }
   $('#online-count').textContent = `${online} / ${cards.size} online`;
+  renderTestNote();
 }
 
 function renderAddresses() {
@@ -433,6 +439,165 @@ function renderAddresses() {
   }
   if (el.innerHTML !== html) el.innerHTML = html;
 }
+
+// ---------- Crash test ----------
+// Runs on the server, so it goes on when this page is closed. Its log is in the server's logs folder.
+
+let testState = null; // the test running now, or the last one
+let testLogs = [];
+let testResultKey = '';
+const testEls = {
+  setup: $('#test-setup'),
+  run: $('#test-run'),
+  step: $('#test-step'),
+  time: $('#test-time'),
+  bar: $('#test-bar'),
+  note: $('#test-note'),
+  result: $('#test-result'),
+  logs: $('#test-logs'),
+  minutes: $('#test-minutes'),
+  commands: $('#test-commands'),
+};
+const VERDICTS = { ok: ['ok', 'OK'], check: ['warn', 'Check'], problem: ['bad', 'Problem'], off: ['muted', 'Not connected'] };
+
+function spanText(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h} h ${String(m).padStart(2, '0')} min`;
+  return m ? `${m} min ${String(s % 60).padStart(2, '0')} s` : `${s} s`;
+}
+
+// Time since the start of the test, as on a stopwatch.
+function stopwatch(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return `${h ? `${h}:${String(m).padStart(2, '0')}` : m}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function fileSize(bytes) {
+  return bytes >= 1e6 ? `${(bytes / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1e3))} KB`;
+}
+
+function renderTest() {
+  const t = testState;
+  const running = Boolean(t && t.running);
+  testEls.setup.hidden = running;
+  testEls.run.hidden = !running;
+  if (running) {
+    testEls.step.textContent = `Step ${t.step + 1} of ${t.steps.length}: ${t.steps[t.step] || ''}`;
+    testEls.time.textContent = `${spanText(t.endsAt - t.now)} left`;
+    testEls.bar.style.width = `${Math.min(100, (100 * (t.now - t.startedAt)) / Math.max(1, t.endsAt - t.startedAt))}%`;
+  }
+  renderTestNote();
+  renderTestResult();
+  const logs = testLogs.length
+    ? `Logs on the server: ${testLogs.map(l => `<a href="/logs/${encodeURIComponent(l.name)}" download>${esc(l.name)}</a> (${fileSize(l.size)})`).join(' · ')}`
+    : '';
+  if (testEls.logs.innerHTML !== logs) testEls.logs.innerHTML = logs;
+}
+
+// What to know before and during a test: TVs with an older page give fewer details.
+function renderTestNote() {
+  if (!state || !state.status) return;
+  const running = Boolean(testState && testState.running);
+  const ids = Object.keys(state.status);
+  const old = ids.filter(id => state.status[id].online && !state.status[id].page);
+  const off = ids.filter(id => !state.status[id].online);
+  const parts = [];
+  if (running) parts.push(`Saving to <code>logs/${esc(testState.file)}</code> on the server. Don't change the wall until it's done. You can close this page: the test goes on.`);
+  if (old.length) parts.push(`<span class="warn">TV ${old.join(', ')} ${old.length > 1 ? 'run' : 'runs'} an older TV page: click <b>Reload TVs</b> first, for the full details.</span>`);
+  if (off.length && !running) parts.push(`Offline now: TV ${off.join(', ')}.`);
+  const html = parts.join(' ');
+  if (testEls.note.innerHTML !== html) testEls.note.innerHTML = html;
+}
+
+function renderTestResult() {
+  const sum = testState && !testState.running ? testState.summary : null;
+  testEls.result.hidden = !sum;
+  if (!sum) return;
+  const key = `${sum.file}:${sum.endedAt}`;
+  if (key === testResultKey) return; // built already: keep the events list as it is
+  testResultKey = key;
+  const n = sum.count;
+  const counts = [
+    n.ok && `<span class="ok">${n.ok} OK</span>`,
+    n.check && `<span class="warn">${n.check} to check</span>`,
+    n.problem && `<span class="bad">${n.problem} with problems</span>`,
+    n.off && `${n.off} not connected`,
+  ].filter(Boolean).join(' · ');
+  const head = `<p><b>Test ${esc(sum.reason)}</b> after ${spanText(sum.endedAt - sum.startedAt)}: ${counts}. ` +
+    `<a href="/logs/${encodeURIComponent(sum.file)}" download>Download the log</a> ` +
+    `<span class="muted">(${esc(sum.file)}, also in the <code>logs</code> folder next to server.js)</span></p>`;
+  const notes = sum.notes.map(text => `<p class="warn">${esc(text)}</p>`).join('');
+  const ms = v => (v === null || v === undefined ? '–' : `${v} ms`);
+  const pct = v => (v === null || v === undefined ? '–' : `${v}%`);
+  const rows = Object.entries(sum.tvs).map(([id, r]) => {
+    const [cls, label] = VERDICTS[r.verdict];
+    if (r.verdict === 'off') return `<tr><td>TV ${esc(id)}</td><td class="verdict ${cls}">${label}</td><td colspan="6"></td></tr>`;
+    const replies = r.replyMs !== null ? `${r.replyMs} ms, up to ${r.replyP95}` : '–';
+    return `<tr><td>TV ${esc(id)}</td><td class="verdict ${cls}">${label}</td>` +
+      `<td class="num">${pct(r.online)}</td><td class="num">${pct(r.inSync)}</td>` +
+      `<td class="num">${ms(r.driftP95)} / ${ms(r.driftMax)}</td>` +
+      `<td class="num">${replies}${r.lost !== null ? `<br>${r.lost}% lost` : ''}</td>` +
+      `<td class="num">${r.worstSettleMs !== null ? `${(r.worstSettleMs / 1000).toFixed(1)} s` : '–'}</td>` +
+      `<td>${r.notes.length ? `<ul>${r.notes.map(text => `<li>${esc(text)}</li>`).join('')}</ul>` : ''}</td></tr>`;
+  }).join('');
+  const table = '<div class="test-table-wrap"><table class="test-table"><thead><tr>' +
+    '<th>TV</th><th>Result</th><th>Online</th><th>In sync</th>' +
+    '<th title="How far off it was by its own clock: 95% of the time / at worst">Off by</th>' +
+    '<th title="How long the server took to answer it over the network, usually and at worst">Wi‑Fi replies</th>' +
+    '<th title="After the test\'s commands, the longest it took to be in sync again">Back in sync</th>' +
+    `<th>Notes</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const events = sum.events.length
+    ? `<details><summary>What happened (${sum.events.length} events)</summary><ol class="test-events">${sum.events.map(e =>
+      `<li${e.warn ? ' class="warn"' : ''}><time>${stopwatch(e.t - sum.startedAt)}</time> ${e.tv ? `TV ${esc(e.tv)} · ` : ''}${esc(e.msg)}</li>`).join('')}</ol></details>`
+    : '';
+  testEls.result.innerHTML = head + notes + table + events;
+}
+
+async function loadTestInfo() {
+  try {
+    const data = await (await fetch('/api/test')).json();
+    testState = data.test;
+    testLogs = data.logs;
+    renderTest();
+  } catch {
+    // The server isn't reachable: the live connection says so.
+  }
+}
+
+async function testAction(body) {
+  try {
+    const res = await fetch('/api/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || res.statusText);
+    testState = data.test;
+    testLogs = data.logs;
+    renderTest();
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+$('#test-start').addEventListener('click', () => {
+  const length = testEls.minutes.selectedOptions[0].textContent;
+  const commands = testEls.commands.checked;
+  const what = commands
+    ? '\n\nAfter 2 minutes, the wall restarts, plays the same video on all TVs, changes quickly, and reloads the TVs, for about 5 minutes. Then it goes back to what it plays now. Sound is not touched.'
+    : '';
+  if (!confirm(`Start a ${length} test?${what}\n\nDon't change the wall until it's done.`)) return;
+  testAction({ action: 'start', minutes: Number(testEls.minutes.value), commands });
+});
+$('#test-stop').addEventListener('click', () => {
+  if (confirm('Stop the test? Its log is kept, and the wall goes back to what it played before.')) testAction({ action: 'stop' });
+});
+loadTestInfo();
 
 // ---------- Controls ----------
 
@@ -474,6 +639,12 @@ events.addEventListener('status', e => {
   if (!state) return;
   state.status = JSON.parse(e.data);
   renderStatus();
+});
+events.addEventListener('test', e => {
+  const wasRunning = Boolean(testState && testState.running);
+  testState = JSON.parse(e.data);
+  renderTest();
+  if (wasRunning && !(testState && testState.running)) loadTestInfo(); // finished: list its log
 });
 events.onopen = () => setConnected(true);
 events.onerror = () => setConnected(false);

@@ -183,6 +183,32 @@ Each TV card shows whether the TV is online, what it's playing, how far it is fr
 
 Videos you add to, or remove from, the `videos` folder appear in the panel within a second. If you replace a file that's playing, the TVs reload it.
 
+### Crash test
+
+The **Crash test** box in the panel checks the whole wall and writes down everything it sees. Before starting it, click **Reload TVs** once after updating the code, so every TV runs the latest page: the box names the TVs that don't yet.
+
+1. Choose a **Length** (10 minutes to 8 hours) and click **Start test**.
+2. It watches the wall as it is for 2 minutes. Then, if *Try the controls* is ticked, it does the following for about 5 minutes:
+   - restarts in sync;
+   - plays the same video on all TVs;
+   - makes quick changes, one every 1.5 s;
+   - reloads the TVs.
+
+   After that it puts the wall back exactly as it was and keeps watching until the end. Sound is never touched. Don't change the wall meanwhile: the test notes it if you do.
+3. At the end, the box gives each TV a result: **OK**, **Check** or **Problem**. The results come with notes, such as *Went offline 2×*, *Lost 8% of its messages*, *Didn't get back in sync after: Reload the TVs*. *What happened* lists every event with its time.
+
+The test runs in the server, so you can close the panel and come back. **Stop test** ends it early, keeps its log, and puts the wall back. Each test's log is in the `logs` folder next to `server.js`: `test-<date>.jsonl`, with one line per second for every TV (state, video, how far off, Wi‑Fi reply time, video loaded ahead, memory). The panel lists the last ten logs to download. That file is what to send for a closer look.
+
+To get the logs on another computer, such as a laptop on the TP-Link's Wi‑Fi, run this in its copy of the project:
+
+```
+./fetch-logs.sh
+```
+
+It copies every log from the server at 192.168.0.21 into that computer's `logs` folder, skipping the ones it already has. From ecalevent, give the server's address or name there, which the server prints when it starts: `./fetch-logs.sh <address>`.
+
+Hovering a TV's dot also shows how fast the server answers it, and the share of its reports lost since its page loaded.
+
 ## Video format
 
 Not every player can decode every file, and 4K is too heavy for the TVs and the Pis. Use **MP4, H.264, at most 1920 px on the long side, 30 fps or less, with a keyframe every second**, and AAC audio. A file a TV can't play shows *"Can't play …"* on that TV.
@@ -250,5 +276,7 @@ The current choices are saved in `state.json`, so a restart of the Mac or the se
 - `public/computer-sound.js`: the panel's *Sound on this computer* box
 - `public/remote.html`, `public/remote.js`, `public/remote.css`, `public/remote-icon.png`: the phone remote
 - `thumbs/`: pictures of the videos for the phone remote, made automatically
+- `logs/`: the crash tests' logs (not in git)
+- `fetch-logs.sh`: copies the crash tests' logs from the server to another computer
 - Not used (section 3b): `public/samsung.js`, the player for Samsung displays; `samsung/app/`, the Samsung app; `samsung/build.sh`, which signs it
 - `videos/`: your videos

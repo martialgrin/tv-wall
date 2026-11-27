@@ -63,6 +63,38 @@
 
     <section>
       <div class="section-head">
+        <h2>Crash test</h2>
+        <span class="muted">Watches every TV, tries the controls, and saves everything it sees to a log file.</span>
+      </div>
+      <div class="test-panel">
+        <div id="test-setup" class="test-row">
+          <label for="test-minutes">Length</label>
+          <select id="test-minutes">
+            <option value="10">10 minutes</option>
+            <option value="30" selected>30 minutes</option>
+            <option value="60">1 hour</option>
+            <option value="180">3 hours</option>
+            <option value="480">8 hours</option>
+          </select>
+          <label class="option" title="About 6 minutes after the start, the wall restarts, plays the same video on all TVs, changes quickly, and reloads the TVs. Then it goes back to what it plays now. Sound isn't touched.">
+            <input type="checkbox" id="test-commands" checked> Try the controls (restart, same video on all TVs, quick changes, reload the TVs)
+          </label>
+          <button type="button" id="test-start" class="primary">Start test</button>
+        </div>
+        <div id="test-run" class="test-row" hidden>
+          <strong id="test-step"></strong>
+          <span id="test-time" class="muted"></span>
+          <button type="button" id="test-stop">Stop test</button>
+          <div class="test-progress"><i id="test-bar"></i></div>
+        </div>
+        <p id="test-note" class="test-note"></p>
+        <div id="test-result" class="test-result" hidden></div>
+        <p id="test-logs" class="test-logs"></p>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
         <h2>Videos</h2>
         <span class="muted">Click a video to play it on all TVs</span>
       </div>
