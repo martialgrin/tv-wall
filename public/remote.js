@@ -1,6 +1,7 @@
 // TV Wall phone remote (/remote): the few controls needed during an exhibition, sized for an iPhone.
-// Sound on/off for all the TVs, which TVs play sound, Expo (each TV its own video) or the same video
-// on every TV, and a restart. Uses the same live connection and commands as the full control panel.
+// Sound on/off for all the TVs, which TVs play sound, Expo (each TV its own video), the same video
+// on every TV, or the show (the same videos in turn, then Expo), and a restart. Uses the same live
+// connection and commands as the full control panel.
 
 (() => {
   const $ = selector => document.querySelector(selector);
@@ -16,6 +17,24 @@
   let state = null;
   let videosKey = '';
   let events = null;
+  let clockSkew = 0; // the server's clock minus the phone's
+
+  function formatTime(seconds) {
+    const s = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  // Where the show is now, as any TV following it plays it.
+  function showNow() {
+    const follower = Object.keys(state.screens).find(id => !state.screens[id].keep);
+    const plan = follower ? tvwallSchedule.plan(state, follower) : null;
+    if (!plan || !plan.shared) return 'waiting for the videos';
+    const seg = tvwallSchedule.at(plan, Date.now() + clockSkew);
+    const left = formatTime((seg.phaseEnd - Date.now() - clockSkew) / 1000);
+    return seg.phase === 'videos'
+      ? `now ${seg.video} (${seg.index + 1} of ${plan.shared.length}), Expo in ${left}`
+      : `now Expo, videos again in ${left}`;
+  }
 
   const esc = text => String(text).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
   const tvList = ids => (ids.length > 1 ? `TVs ${ids.join(', ')}` : `TV ${ids[0]}`);
@@ -78,9 +97,10 @@
       b.setAttribute('aria-checked', String(b.dataset.mode === state.mode));
     }
     const kept = Object.keys(state.screens).filter(id => state.screens[id].keep);
-    modeHint.textContent = state.mode === 'all'
-      ? `Every TV plays ${state.all.video || 'nothing'}${kept.length ? `, except ${tvList(kept)}, which keeps its own videos` : ''}. Tap Expo to go back.`
-      : 'Expo: each TV plays its own videos.';
+    const except = kept.length ? `, except ${tvList(kept)}, which keeps its own videos` : '';
+    if (state.mode === 'all') modeHint.textContent = `Every TV plays ${state.all.video || 'nothing'}${except}. Tap Expo to go back.`;
+    else if (state.mode === 'show') modeHint.textContent = `Show: every TV plays the same videos in turn, then Expo for ${state.show.expoMinutes} min, and again${except}. Now: ${showNow()}.`;
+    else modeHint.textContent = 'Expo: each TV plays its own videos.';
   }
 
   function renderVideos() {
@@ -153,6 +173,7 @@
     events = new EventSource('/api/events?role=control');
     events.addEventListener('state', e => {
       state = JSON.parse(e.data);
+      clockSkew = state.now - Date.now();
       setConnected(true);
       render();
     });
@@ -169,6 +190,10 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && (!events || events.readyState !== 1)) connect();
   });
+
+  setInterval(() => {
+    if (state && state.mode === 'show') renderMode();
+  }, 1000);
 
   connect();
 })();

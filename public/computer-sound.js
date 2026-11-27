@@ -53,22 +53,24 @@
     if (best) clockOffset = best.offset;
   }
 
-  // What a TV plays, by the same rules as the TV page: the shared video, or its own videos one after another.
-  function scheduleOf(id) {
-    const s = state.screens[id];
-    const shared = state.mode === 'all' && !s.keep;
-    const names = shared ? [state.all.video] : s.playlist || [s.video];
-    return { names: names.filter(Boolean), list: tvwallSchedule.items(names, state.videos), startAt: shared ? state.all.startAt : s.startAt };
+  // What a TV plays, by the same plan as the TV page: its own videos, the shared video, or the show.
+  function planOf(id) {
+    return tvwallSchedule.plan(state, id);
+  }
+
+  function describePlan(p) {
+    const names = p.list.map(item => item.video).join(' → ') || 'black screen';
+    return p.shared ? `the show, then ${names}` : names;
   }
 
   // What should be heard here: the chosen TV's video now, plus its next one when it starts within
   // 2 s (it loads ahead and waits for its start). One entry per video and start time.
   function wanted() {
     if (!source || !state || !state.screens[source]) return [];
-    const { list, startAt } = scheduleOf(source);
+    const plan = planOf(source);
     const now = clockOffset === null ? Date.now() : serverNow();
     const byKey = new Map();
-    for (const seg of [tvwallSchedule.segmentAt(list, startAt, now), tvwallSchedule.segmentAt(list, startAt, now + 2000)]) {
+    for (const seg of [tvwallSchedule.at(plan, now), tvwallSchedule.at(plan, now + 2000)]) {
       if (!seg.url) continue;
       const key = `${seg.url}@${seg.startAt}`;
       if (!byKey.has(key)) byKey.set(key, { key, video: seg.video, url: seg.url, startAt: seg.startAt, loop: seg.loop, tvs: [source] });
@@ -130,7 +132,7 @@
   function fillSources() {
     if (source && !state.screens[source]) source = '';
     const options = [['', 'Off']]
-      .concat(Object.keys(state.screens).map(id => [id, `TV ${id} · ${scheduleOf(id).names.join(' → ') || 'black screen'}`]));
+      .concat(Object.keys(state.screens).map(id => [id, `TV ${id} · ${describePlan(planOf(id))}`]));
     const html = options.map(([value, label]) => `<option value="${esc(value)}">${esc(label)}</option>`).join('');
     if (sourceSelect.innerHTML !== html) sourceSelect.innerHTML = html;
     sourceSelect.value = source;

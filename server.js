@@ -249,7 +249,25 @@ function emptyState() {
     screens[id] = { video: null, playlist: [], startAt: 0, sound: false, rotation: 0, oneVideo: false, keep: false };
   }
   // soundOn: the remote's master switch. Off silences every TV; on, the TVs whose speaker is on play sound.
-  return { mode: 'individual', soundOn: true, all: { video: null, startAt: 0 }, screens };
+  // show: in "Show" mode, every TV plays these videos together, one after another, then Expo for
+  // expoMinutes, and again (public/schedule.js).
+  return {
+    mode: 'individual',
+    soundOn: true,
+    all: { video: null, startAt: 0 },
+    show: { videos: [], expoMinutes: 10, startAt: 0, expoFirst: false },
+    screens,
+  };
+}
+
+const MODES = ['individual', 'all', 'show'];
+
+// The show's videos when none are chosen yet: every video, except those of the TVs that keep their
+// own videos in every mode (the credits).
+function defaultShowVideos() {
+  const kept = new Set();
+  for (const id of screenIds) if (state.screens[id].keep) state.screens[id].playlist.forEach(v => kept.add(v));
+  return listVideos().map(v => v.name).filter(name => !kept.has(name));
 }
 
 function loadState() {
@@ -262,9 +280,11 @@ function loadState() {
     fillInOrder(loaded, Date.now() + START_DELAY);
     return loaded;
   }
-  if (saved.mode === 'all' || saved.mode === 'individual') loaded.mode = saved.mode;
+  if (MODES.includes(saved.mode)) loaded.mode = saved.mode;
   if (typeof saved.soundOn === 'boolean') loaded.soundOn = saved.soundOn;
   if (saved.all) Object.assign(loaded.all, saved.all);
+  if (saved.show) Object.assign(loaded.show, saved.show);
+  if (!Array.isArray(loaded.show.videos)) loaded.show.videos = [];
   for (const id of screenIds) {
     if (saved.screens && saved.screens[id]) Object.assign(loaded.screens[id], saved.screens[id]);
     const s = loaded.screens[id];
@@ -301,7 +321,28 @@ function fillInOrder(target, startAt) {
 
 function restartAll(startAt) {
   state.all.startAt = startAt;
+  state.show.startAt = startAt;
+  state.show.expoFirst = false;
   for (const id of screenIds) state.screens[id].startAt = startAt;
+}
+
+// Moves the show so that its videos ('videos') or its Expo ('expo') begin at `at`. Until then the TVs
+// show what they showed; with `join`, they join the other part of the show instead, near its end,
+// and go through the change as it happens by itself (the crash test does this).
+function showFrom(phase, at, join) {
+  const byName = new Map(listVideos().map(v => [v.name, v]));
+  const lengths = state.show.videos.filter(name => byName.has(name)).map(name => byName.get(name).duration || 0);
+  if (!lengths.length || lengths.some(d => !(d > 0))) throw new Error('The show needs videos whose lengths are measured');
+  const pass = lengths.reduce((sum, d) => sum + d, 0) * 1000;
+  const expo = state.show.expoMinutes * 60000;
+  state.mode = 'show';
+  if (phase === 'videos') {
+    state.show.expoFirst = Boolean(join);
+    state.show.startAt = join ? at - expo : at;
+  } else {
+    state.show.expoFirst = !join;
+    state.show.startAt = join ? at - pass : at;
+  }
 }
 
 function applyCommand(cmd) {
@@ -318,11 +359,31 @@ function applyCommand(cmd) {
   };
 
   switch (cmd.type) {
-    case 'mode': // { mode: 'individual' | 'all' }
-      if (cmd.mode !== 'individual' && cmd.mode !== 'all') throw new Error('Mode must be "individual" or "all"');
+    case 'mode': // { mode: 'individual' | 'all' | 'show' }
+      if (!MODES.includes(cmd.mode)) throw new Error('Mode must be "individual", "all" or "show"');
       state.mode = cmd.mode;
       if (cmd.mode === 'all' && !state.all.video && names.length) state.all.video = names[0];
+      if (cmd.mode === 'show' && !state.show.videos.some(v => names.includes(v))) state.show.videos = defaultShowVideos();
       restartAll(startAt);
+      break;
+    case 'show': { // { videos?, expoMinutes? }: the show's videos, in order, and how long its Expo lasts
+      if (cmd.videos !== undefined) {
+        if (!Array.isArray(cmd.videos)) throw new Error('videos must be a list');
+        state.show.videos = cmd.videos.map(checkVideo).filter(Boolean);
+      }
+      if (cmd.expoMinutes !== undefined) {
+        const minutes = Number(cmd.expoMinutes);
+        if (!(minutes >= 0 && minutes <= 240)) throw new Error('Expo minutes must be between 0 and 240');
+        state.show.expoMinutes = minutes;
+      }
+      state.show.startAt = startAt; // the show starts again from its first video
+      state.show.expoFirst = false;
+      break;
+    }
+    case 'showSkip': // { to: 'videos' | 'expo', inMs?, join? }: that part of the show begins now (or in inMs)
+      if (cmd.to !== 'videos' && cmd.to !== 'expo') throw new Error('to must be "videos" or "expo"');
+      if (!state.show.videos.some(v => names.includes(v))) state.show.videos = defaultShowVideos();
+      showFrom(cmd.to, Date.now() + Math.max(START_DELAY, Number(cmd.inMs) || 0), Boolean(cmd.join));
       break;
     case 'screen': { // { screen, video }: one TV gets a single video of its own
       const id = checkScreen(cmd.screen);
@@ -499,6 +560,7 @@ function snapshot() {
     mode: state.mode,
     soundOn: state.soundOn,
     all: state.all,
+    show: state.show,
     screens: state.screens,
     videos: listVideos(),
     status: allStatus(),
@@ -525,44 +587,90 @@ execFile('git', ['rev-parse', '--short', 'HEAD'], { cwd: __dirname, timeout: 500
   if (!err) serverVersion = stdout.trim();
 });
 
-function testSteps(minutes, withCommands) {
+// The steps of a test. "watch" only watches; "normal" tries the controls once; "hard" also goes through
+// the show's two changes, a storm of changes, every connection cut, a frozen server, and a second reload.
+function testSteps(minutes, level) {
   const sec = 1000 / TEST_SPEED;
   const steps = [{ key: 'baseline', label: 'Watching the wall as it is', ms: 120 * sec }];
-  if (withCommands) {
+  if (level !== 'watch') {
+    const hard = level === 'hard';
     const names = listVideos().map(v => v.name);
     const shared = names.includes(state.all.video) ? state.all.video : names[0];
-    const quick = shared
-      ? [() => testCommand({ type: 'restart' }), () => testCommand({ type: 'all', video: shared }), restoreWall]
-      : [() => testCommand({ type: 'restart' }), restoreWall];
+    const show = hard && showReady();
     steps.push({ key: 'restart', label: 'Restart in sync', ms: 45 * sec, run: () => testCommand({ type: 'restart' }) });
     if (shared) {
-      steps.push({ key: 'all', label: `Same video on all TVs (${shared})`, ms: 75 * sec, run: () => testCommand({ type: 'all', video: shared }) });
+      steps.push({ key: 'all', label: `Same video on all TVs (${shared})`, ms: (hard ? 60 : 75) * sec, run: () => testCommand({ type: 'all', video: shared }) });
     }
-    steps.push({ key: 'back', label: 'Back to what the wall played', ms: 60 * sec, run: restoreWall });
+    steps.push({ key: 'back', label: 'Back to what the wall played', ms: (hard ? 45 : 60) * sec, run: restoreWall });
+    if (show) {
+      // As they happen by themselves: the TVs join the show 20 s before the change, then go through it.
+      steps.push({ key: 'toExpo', label: 'Show: from the videos to the Expo', ms: 60 * sec, run: () => testCommand({ type: 'showSkip', to: 'expo', inMs: 20000, join: true }) });
+      steps.push({ key: 'toVideos', label: 'Show: from the Expo back to the videos', ms: 60 * sec, run: () => testCommand({ type: 'showSkip', to: 'videos', inMs: 20000, join: true }) });
+    }
+    const quick = [() => testCommand({ type: 'restart' })];
+    if (shared) quick.push(() => testCommand({ type: 'all', video: shared }));
+    if (hard) quick.push(() => testCommand({ type: 'mode', mode: 'individual' }));
+    if (show) quick.push(() => testCommand({ type: 'mode', mode: 'show' }), () => testCommand({ type: 'showSkip', to: 'expo' }));
+    quick.push(restoreWall);
+    const storm = hard ? [...quick, ...quick, ...quick] : [...quick, ...quick];
+    const gap = hard ? 1000 : 1500;
     steps.push({
-      key: 'quick', label: 'Quick changes, one every 1.5 s', ms: 50 * sec,
-      run: () => [...quick, ...quick].forEach((fn, i) => test.timers.push(setTimeout(fn, i * 1500))),
+      key: 'quick',
+      label: hard ? `A storm of ${storm.length} changes, one a second` : 'Quick changes, one every 1.5 s',
+      ms: storm.length * gap + 40 * sec,
+      run: () => storm.forEach((fn, i) => test.timers.push(setTimeout(fn, i * gap))),
     });
-    steps.push({ key: 'reload', label: 'Reload the TVs', ms: 75 * sec, run: () => testCommand({ type: 'reload' }) });
+    if (hard) {
+      steps.push({ key: 'drop', label: 'Every connection to the server cut, as a Wi‑Fi drop would', ms: 45 * sec, run: dropConnections });
+      steps.push({ key: 'freeze', label: 'Server frozen for 3 s', ms: 40 * sec, run: freezeServer });
+    }
+    steps.push({ key: 'reload', label: 'Reload the TVs', ms: 75 * sec, reload: true, run: () => testCommand({ type: 'reload' }) });
+    if (hard) steps.push({ key: 'reload2', label: 'Reload the TVs again', ms: 75 * sec, reload: true, run: () => testCommand({ type: 'reload' }) });
   }
   const used = steps.reduce((sum, s) => sum + s.ms, 0);
   steps.push({ key: 'watch', label: 'Long run', ms: Math.max(60 * sec, (minutes * 60000) / TEST_SPEED - used) });
   return steps;
 }
 
+// The show can be tried: its videos (or, if none are chosen, every video) all have a measured length.
+function showReady() {
+  const byName = new Map(listVideos().map(v => [v.name, v]));
+  const names = (state.show.videos.some(n => byName.has(n)) ? state.show.videos : defaultShowVideos()).filter(n => byName.has(n));
+  return names.length > 0 && names.every(n => byName.get(n).duration > 0);
+}
+
+// As a Wi-Fi drop would: every connection closes, including videos being downloaded and the live updates.
+function dropConnections() {
+  const count = clients.size;
+  if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+  else for (const c of clients) c.res.destroy();
+  testEvent(null, `Test cut every connection to the server (${count} live ones)`);
+}
+
+// As a busy computer would: the server answers nothing for 3 s. The TVs should play on regardless.
+function freezeServer() {
+  testEvent(null, 'Test froze the server for 3 s');
+  flushTest();
+  const end = Date.now() + 3000;
+  while (Date.now() < end) {
+    // Busy on purpose.
+  }
+  test.ignoreLag = true; // the freeze itself isn't the computer being slow
+}
+
 function startTest(options) {
   if (test && test.running) throw new Error('A test is already running');
   const minutes = Math.min(24 * 60, Math.max(5, Math.round(Number(options.minutes) || 30)));
-  const withCommands = options.commands !== false;
+  const level = ['watch', 'normal', 'hard'].includes(options.level) ? options.level : options.commands === false ? 'watch' : 'normal';
   fs.mkdirSync(LOGS_DIR, { recursive: true });
   const now = Date.now();
   test = {
     running: true,
     file: `test-${fileStamp(new Date(now))}.jsonl`,
-    options: { minutes, commands: withCommands },
+    options: { minutes, level },
     startedAt: now,
     // What the wall plays now, put back at the end.
-    before: JSON.parse(JSON.stringify({ mode: state.mode, soundOn: state.soundOn, all: state.all, screens: state.screens })),
+    before: JSON.parse(JSON.stringify({ mode: state.mode, soundOn: state.soundOn, all: state.all, show: state.show, screens: state.screens })),
     steps: [],
     stepIndex: -1,
     stepStartedAt: now,
@@ -578,7 +686,7 @@ function startTest(options) {
     outsideChanges: 0,
     tvs: Object.fromEntries(screenIds.map(id => [id, newTv()])),
   };
-  test.steps = testSteps(minutes, withCommands);
+  test.steps = testSteps(minutes, level);
   testLine({
     type: 'start',
     t: now,
@@ -707,6 +815,7 @@ function restoreWall() {
   const startAt = Date.now() + START_DELAY;
   state.mode = before.mode;
   state.all = { ...before.all, startAt };
+  state.show = { ...before.show, startAt };
   for (const id of screenIds) {
     setPlaylist(state.screens[id], [...before.screens[id].playlist]);
     state.screens[id].startAt = startAt;
@@ -757,14 +866,11 @@ function stepAcc(id, key) {
   return tv.steps[key] || (tv.steps[key] = newAcc());
 }
 
-// Where a TV should be at server time `at`, by the same schedule the TV follows: { video, pos (s) }.
+// Where a TV should be at server time `at`, by the same plan the TV follows: { video, pos (s) }.
 function expectedAt(id, at, videos, reportedDuration) {
-  const own = state.screens[id];
-  const shared = state.mode === 'all' && !own.keep;
-  const list = tvwallSchedule.items(shared ? [state.all.video] : own.playlist, videos);
-  const seg = tvwallSchedule.segmentAt(list, shared ? state.all.startAt : own.startAt, at, own.oneVideo);
+  const seg = tvwallSchedule.at(tvwallSchedule.plan({ ...state, videos }, id), at, state.screens[id].oneVideo);
   if (!seg.url) return null;
-  const d = list[seg.index].duration || reportedDuration;
+  const d = seg.duration || reportedDuration;
   let pos = Math.max(0, (at - seg.startAt) / 1000);
   if (seg.loop && d > 0) pos %= d;
   return { video: seg.video, pos, loop: seg.loop, d };
@@ -775,8 +881,10 @@ function sampleTest() {
   const step = test.steps[test.stepIndex];
   const videos = listVideos();
   const restartExpected = now - test.reloadAt < RESTART_GRACE;
-  const line = { type: 'sample', t: now, step: step.key, lag: lagMax, tv: {} };
-  test.lagMax = Math.max(test.lagMax, lagMax);
+  const lag = test.ignoreLag ? 0 : lagMax;
+  test.ignoreLag = false;
+  const line = { type: 'sample', t: now, step: step.key, lag, tv: {} };
+  test.lagMax = Math.max(test.lagMax, lag);
   lagMax = 0;
   if (test.samples++ % 10 === 0) {
     line.sys = { load: Number(os.loadavg()[0].toFixed(2)), freeMB: Math.round(os.freemem() / 1e6) };
@@ -874,7 +982,7 @@ function sampleTest() {
     // After "Reload TVs", that's once the reloaded page plays, not the old one still reporting.
     let measuring = true;
     if (test.settleFrom !== null) {
-      const reloaded = step.key !== 'reload' || !s.page || s.page !== (test.reloadPages || {})[id];
+      const reloaded = !step.reload || !s.page || s.page !== (test.reloadPages || {})[id];
       if (!acc.settled && now >= test.settleFrom && ok && reloaded) {
         acc.settled = true;
         acc.settleMs = now - test.settleFrom;

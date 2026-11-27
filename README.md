@@ -1,6 +1,6 @@
 # TV Wall
 
-Play its own videos on each of 8 TVs (one, or several one after another), or the same video on all of them, in sync, from a control panel on your Mac (or phone).
+Play its own videos on each of 8 TVs (one, or several one after another), the same video on all of them, or a show that alternates the two, in sync, from a control panel on your Mac (or phone).
 
 Your Mac runs a small server. Each TV has a Raspberry Pi 5 on its HDMI input, which opens that TV's page from the server full-screen and plays its video. Only short commands travel over the network when you switch; every TV follows the Mac's clock, so all screens stay at the same frame.
 
@@ -37,6 +37,28 @@ Then copy the `videos` folder over separately (USB stick, AirDrop).
 4. The first time, macOS may ask whether `node` can accept incoming network connections: click **Allow**, or the TVs can't reach the Mac.
 
 Leave the Terminal window open while you use the TVs. Stop the server with `Ctrl+C`.
+
+### The Mac mini: server, and one of the TVs
+
+The Mac mini runs the server, and its own screen can be one of the TVs:
+
+```bash
+./mac/tv.sh 8
+```
+
+That opens TV 8's page full-screen on the Mac mini, in a browser window of its own (Google Chrome, with its own profile, so your usual Chrome isn't touched). Cmd+Q leaves it. Don't open the control panel on the Mac mini during the exhibition: manage the wall from another computer or a phone (below), so the Mac mini only serves the videos and plays its TV.
+
+To have it all start by itself, and the server start again within seconds if it ever stops:
+
+```bash
+./mac/autostart.sh install 8
+```
+
+From then on, at every login the server starts (keeping the Mac and its screen awake) and TV 8 opens full-screen. After a `git pull`, run `./mac/autostart.sh restart`; `./mac/autostart.sh status` says whether it runs; `./mac/autostart.sh uninstall` goes back to starting it by hand. Its messages go to `logs/server.log`. For a start after a power cut, also set *System Settings → Users & Groups → Automatically log in*, and *Energy → Start up automatically after a power failure*.
+
+### The panel from your own computer
+
+On your laptop, open the Mac mini's panel in the browser: `http://192.168.0.21:3000/` on the TP-Link's Wi‑Fi, or the Mac mini's ecalevent address (the server prints it when it starts). Don't run `node server.js` on the laptop: one server only, on the Mac mini. The panel is only a remote control: it sends commands and shows the TVs' status, and its previews are small pictures made by the server, so it takes nothing away from the TVs. In Safari, *File → Add to Dock* makes it an app of its own.
 
 ## 2. Network
 
@@ -139,6 +161,7 @@ Open `http://<mac-name>.local:3000/` on the Mac, or on your phone if it's on eca
 |---|---|
 | **Expo: own videos per TV** | Each TV plays its own list of videos, shown on its card. |
 | **Same video on all TVs** | Every TV plays the video chosen at the top. Clicking a video in the *Videos* list does the same. |
+| **Show: videos in turn + Expo** | Every TV plays the same video, one after another through the show's list; after the last one, Expo for 10 minutes (each TV its own videos, as on its cards); then the list again, and so on. TVs with *Keep its own videos* (the credits) stay on their own videos throughout. In the Show box: the show's videos (+ *Add a video*, ×, *All videos*), the Expo minutes, where the show is now, and *Videos now* / *Expo now* to jump. Changing the list or the minutes starts the show again from its first video. |
 | *+ Add a video…* on a TV | Adds a video at the end of that TV's list. The TV plays its videos one after another (1, 2, 1, 2…) and starts again from the first after the last. A list of one video loops it. The numbers on the card give the order; the video on screen now is highlighted. |
 | × on a video in a TV's list | Removes it. With no video left, the TV shows black. |
 | **Fill in order** | TV 1 plays the first video, TV 2 the second, and so on (one video each, in place of their lists). |
@@ -147,12 +170,12 @@ Open `http://<mac-name>.local:3000/` on the Mac, or on your phone if it's on eca
 | **Reload TVs** | Reloads the page on every TV (useful after changing settings). |
 | **Rotate all** | Turns the picture on every TV a quarter turn clockwise. |
 | Rotate button on a TV (↻ 0°) | Turns that TV's picture a quarter turn clockwise: 0°, 90°, 180°, 270°. The card's preview turns too, so it shows what the screen displays. The video keeps playing, in sync. |
-| *Keep its own videos* on a TV | In *Same video on all TVs* mode, that TV keeps playing its own list while the others play the shared video. Its list stays editable, and its card has an orange outline. The phone remote's *Same video* follows this too. |
+| *Keep its own videos* on a TV | In *Same video on all TVs* and *Show* modes, that TV keeps playing its own list while the others play the shared videos: tick it on the credits TV. Its list stays editable, and its card has an orange outline. The phone remote's *Same video* follows this too. |
 | *One video at a time* on a TV | For a TV that stutters while switching: a Raspberry Pi that drops frames then, or a display that can decode only one video at once. That TV stops the current video and loads the next one in its place, instead of loading it alongside. The picture pauses for about 1.5 s at each switch, then starts with the other TVs. A single video loops in place on that TV. Leave it off on TVs that play smoothly. |
 | *Sound on this computer* | Plays the sound of the chosen TV's video on the computer showing the panel, in sync with the TVs (see below). |
 | Speaker icon on a TV | Turns that TV's sound on or off. In *Same video on all TVs* mode, turn sound on for only one TV: the same audio from 8 speakers sounds like an echo. |
 
-Switching between the two modes keeps each TV's list, so you can go back and forth. Changing a TV's list starts it again from its first video. All TVs with the same list change video at the same moment.
+Switching between the modes keeps each TV's list, so you can go back and forth. Changing a TV's list starts it again from its first video. All TVs with the same list change video at the same moment.
 
 ### Phone remote
 
@@ -164,6 +187,7 @@ A simpler page for an iPhone, for use during the exhibition: `http://<mac-name>.
 | TV numbers under it | Which TVs play sound: tap a number to turn that TV's speaker on or off. In *Same video* mode, choose one TV to avoid an echo. |
 | **Expo** | Each TV plays its own videos, as set in the full panel. |
 | **Same video** | Every TV plays the same video. |
+| **Show** | The show, as set in the full panel: the same videos in turn, then Expo. The line under the buttons says where it is. |
 | A video in the grid | Plays that video on every TV, together. Tap it again to restart it. |
 | **Restart in sync** | Every TV restarts its video from the beginning, together. |
 
@@ -187,12 +211,18 @@ Videos you add to, or remove from, the `videos` folder appear in the panel withi
 
 The **Crash test** box in the panel checks the whole wall and writes down everything it sees. Before starting it, click **Reload TVs** once after updating the code, so every TV runs the latest page: the box names the TVs that don't yet.
 
-1. Choose a **Length** (10 minutes to 8 hours) and click **Start test**.
-2. It watches the wall as it is for 2 minutes. Then, if *Try the controls* is ticked, it does the following for about 5 minutes:
-   - restarts in sync;
-   - plays the same video on all TVs;
-   - makes quick changes, one every 1.5 s;
-   - reloads the TVs.
+Put the wall in the mode it will be in (the **Show**, for the exhibition) before starting: the test puts it back that way, and watches it until the end.
+
+1. Choose a **Length** (10 minutes to 8 hours) and the **Controls**, then click **Start test**. For a night before an opening: **Hard**, 3 hours or more, with the wall in Show mode, so the long run goes through many rounds of the show.
+2. It watches the wall as it is for 2 minutes. Then it tries the controls:
+   - **Normal** (about 5 minutes): restart in sync, the same video on all TVs, quick changes one every 1.5 s, and a reload of the TVs.
+   - **Hard** (about 10 minutes): the same, plus:
+     - the show's two changes (videos → Expo, Expo → videos), as they happen by themselves;
+     - a storm of changes between every mode, one a second;
+     - every connection to the server cut at once, as a Wi‑Fi drop would;
+     - the server frozen for 3 s;
+     - a second reload.
+   - **Watch only:** changes nothing.
 
    After that it puts the wall back exactly as it was and keeps watching until the end. Sound is never touched. Don't change the wall meanwhile: the test notes it if you do.
 3. At the end, the box gives each TV a result: **OK**, **Check** or **Problem**. The results come with notes, such as *Went offline 2×*, *Lost 8% of its messages*, *Didn't get back in sync after: Reload the TVs*. *What happened* lists every event with its time.
@@ -278,5 +308,7 @@ The current choices are saved in `state.json`, so a restart of the Mac or the se
 - `thumbs/`: pictures of the videos for the phone remote, made automatically
 - `logs/`: the crash tests' logs (not in git)
 - `fetch-logs.sh`: copies the crash tests' logs from the server to another computer
+- `mac/tv.sh`: shows one TV's page full-screen on a Mac (the Mac mini)
+- `mac/autostart.sh`: starts the server, and that TV page, by themselves at login
 - Not used (section 3b): `public/samsung.js`, the player for Samsung displays; `samsung/app/`, the Samsung app; `samsung/build.sh`, which signs it
 - `videos/`: your videos

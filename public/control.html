@@ -16,6 +16,7 @@
     <div class="mode" role="radiogroup" aria-label="Mode">
       <button type="button" role="radio" data-mode="individual">Expo: own videos per TV</button>
       <button type="button" role="radio" data-mode="all">Same video on all TVs</button>
+      <button type="button" role="radio" data-mode="show" title="Every TV plays the same videos one after another, then Expo for a few minutes, and again">Show: videos in turn + Expo</button>
     </div>
 
     <div class="actions">
@@ -31,6 +32,28 @@
     <section id="all-panel" class="all-panel" hidden>
       <label for="all-video">All TVs play</label>
       <select id="all-video"></select>
+    </section>
+
+    <section id="show-panel" class="all-panel show-panel" hidden>
+      <div class="show-row">
+        <strong>Show</strong>
+        <span id="show-now" class="show-now"></span>
+        <span class="show-buttons">
+          <button type="button" id="show-videos-now" title="Start the videos from the first one, on every TV">Videos now</button>
+          <button type="button" id="show-expo-now" title="Go to the Expo now, on every TV">Expo now</button>
+        </span>
+      </div>
+      <div class="show-row">
+        <span class="show-label">Every TV plays, one after another:</span>
+        <div id="show-videos" class="playlist" aria-label="The show's videos, in order"></div>
+        <select id="show-add" aria-label="Add a video to the show"></select>
+        <button type="button" id="show-all" title="Every video, except the ones of TVs that keep their own videos">All videos</button>
+      </div>
+      <div class="show-row">
+        <label for="show-expo">then Expo for</label>
+        <input id="show-expo" type="number" min="0" max="240" step="1"> <span>minutes, and again.</span>
+      </div>
+      <p id="show-note" class="show-note"></p>
     </section>
 
     <section>
@@ -76,9 +99,12 @@
             <option value="180">3 hours</option>
             <option value="480">8 hours</option>
           </select>
-          <label class="option" title="About 6 minutes after the start, the wall restarts, plays the same video on all TVs, changes quickly, and reloads the TVs. Then it goes back to what it plays now. Sound isn't touched.">
-            <input type="checkbox" id="test-commands" checked> Try the controls (restart, same video on all TVs, quick changes, reload the TVs)
-          </label>
+          <label for="test-level">Controls</label>
+          <select id="test-level">
+            <option value="hard" selected>Hard: every change, a storm, cut connections, a frozen server, two reloads (about 10 min)</option>
+            <option value="normal">Normal: restart, same video, quick changes, a reload (about 5 min)</option>
+            <option value="watch">Watch only: change nothing</option>
+          </select>
           <button type="button" id="test-start" class="primary">Start test</button>
         </div>
         <div id="test-run" class="test-row" hidden>

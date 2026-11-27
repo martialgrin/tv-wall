@@ -11,8 +11,9 @@
   var STALL_TIMEOUT = 8000; // reload the video if it is stuck this long
   var SEEK_TIMEOUT = 30000; // ...or this long while jumping, which some TVs do slowly
   var LOAD_TIMEOUT = 6000;  // a new video still not playing this long after its start may lack a free decoder
-  var PRELOAD = 2000;       // ms before a playlist's next video starts, begin loading it in the background
+  var PRELOAD = 3000;       // ms before a playlist's next video starts, begin loading it in the background
   var KEEP_TIMEOUT = 300000; // give up downloading a video into memory after this long, and try again later
+  var KEEP_MAX = 150e6;      // bytes: keep this TV's own videos in memory when they add up to no more than this
   var MEDIA_ERRORS = {
     1: 'loading was interrupted',
     2: 'network error while downloading it',
@@ -151,10 +152,8 @@
       lastError = 'TV ' + screenId + ' does not exist on the server';
       return;
     }
-    // The shared video in "Same video" mode (unless this TV keeps its own), else this TV's playlist.
-    var names = s.mode === 'all' && !own.keep ? [s.all.video] : own.playlist || [own.video];
-    var startAt = s.mode === 'all' && !own.keep ? s.all.startAt : own.startAt;
-    schedule = { list: tvwallSchedule.items(names, s.videos), startAt: startAt };
+    // Its own videos (Expo), the shared video (Same video), or the show: the same plan the panel and server use.
+    schedule = tvwallSchedule.plan(s, screenId);
     wantSound = !!own.sound && s.soundOn !== false; // the remote's master switch can silence every TV
     applySound();
     document.body.className = own.rotation ? 'rot-' + own.rotation : '';
@@ -173,8 +172,8 @@
   function retarget() {
     if (!schedule || clockOffset === null) return;
     var now = serverNow();
-    var current = tvwallSchedule.segmentAt(schedule.list, schedule.startAt, now, oneVideo);
-    var next = tvwallSchedule.segmentAt(schedule.list, schedule.startAt, now + PRELOAD, oneVideo);
+    var current = tvwallSchedule.at(schedule, now, oneVideo);
+    var next = tvwallSchedule.at(schedule, now + PRELOAD, oneVideo);
     var t = next.startAt !== current.startAt || next.url !== current.url ? next : current;
     var key = t.url + '@' + t.startAt;
     if (key === targetKey) return;
@@ -198,7 +197,10 @@
       clearTimeout(pending.timer);
       unload(pending.el);
     }
-    pending = { target: target, el: null, positioned: false, started: false, retryAt: 0, preparedAt: performance.now() };
+    pending = {
+      target: target, el: null, positioned: false, started: false, retryAt: 0,
+      preparedAt: performance.now(), preparedServer: clockOffset === null ? 0 : serverNow(),
+    };
     if (!target.url) return; // black screen, switched at startAt by the tick
     var el;
     if (oneVideo) {
@@ -223,29 +225,48 @@
 
   // ---------- Keeping a single video in memory ----------
 
-  // A single video plays round after round, each round loading it again. The browsers' own caches
-  // are too small to keep a video, so each round would download it again over the Wi-Fi: download
-  // it once into memory instead, and play the next rounds from there.
+  // A TV plays its own videos round after round (in the show, during each Expo), each round loading
+  // them again. The browsers' own caches are too small to keep a video, so each round would download
+  // it again over the Wi-Fi: download them once into memory instead, and play the next rounds from
+  // there. Up to KEEP_MAX in all; the show's shared videos, played once per round of the show, stream.
   function srcFor(url) {
     var k = kept[url];
     return k && k.blobUrl && !keepBroken ? k.blobUrl : url;
   }
 
+  function wantedInMemory() {
+    if (keepBroken || !schedule.list.length) return [];
+    var total = 0;
+    schedule.list.forEach(function (item) { total += item.size || 0; });
+    return total <= KEEP_MAX ? schedule.list.map(function (item) { return item.url; }) : [];
+  }
+
   function keepVideos() {
     if (!schedule || typeof URL.createObjectURL !== 'function') return;
-    var want = !keepBroken && schedule.list.length === 1 ? schedule.list[0].url : null;
+    var want = wantedInMemory();
+    var busy = false;
     // Let go of videos that no longer play, once no element shows them.
     Object.keys(kept).forEach(function (url) {
       var k = kept[url];
-      if (url === want || k.loading) return;
+      if (k.loading) busy = true;
+      if (want.indexOf(url) >= 0 || k.loading) return;
       if (k.blobUrl && els.some(function (el) { return el.getAttribute('src') === k.blobUrl; })) return;
       if (k.blobUrl) URL.revokeObjectURL(k.blobUrl);
       delete kept[url];
     });
-    if (!want) return;
-    var k = kept[want] || (kept[want] = { failures: 0, retryAt: 0 });
+    if (busy) return; // one download at a time, to leave the Wi-Fi to the videos playing
     // Not enough memory gives an error too: after a few, stream it as before.
-    if (k.blobUrl || k.loading || k.failures >= 3 || performance.now() < k.retryAt) return;
+    var url = null;
+    for (var i = 0; i < want.length && !url; i++) {
+      var w = kept[want[i]] || (kept[want[i]] = { failures: 0, retryAt: 0 });
+      if (!w.blobUrl && w.failures < 3 && performance.now() >= w.retryAt) url = want[i];
+    }
+    if (!url) return;
+    keepOne(url);
+  }
+
+  function keepOne(want) {
+    var k = kept[want];
     k.loading = true;
     var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, KEEP_TIMEOUT) : null;
@@ -294,8 +315,12 @@
     // The next round of the video on screen isn't loaded in time (a weak link, or still downloading
     // the first): go back to the start of the one on screen instead, as a single video used to loop.
     if (active && active.target.url === t.url && now > t.startAt + 500 && p.el.readyState < 3) {
-      health.fallbacks++;
-      note('Next round of ' + t.video + ' not loaded in time: looped the one on screen', true);
+      if (p.preparedServer < t.startAt) {
+        health.fallbacks++;
+        note('Next round of ' + t.video + ' not loaded in time: looped the one on screen', true);
+      } else {
+        note(t.video + ' was already on screen: moved it to its new position'); // joined it halfway
+      }
       unload(p.el);
       pending = null;
       active.target = t;
@@ -307,7 +332,8 @@
       return;
     }
 
-    if (active && now > t.startAt + LOAD_TIMEOUT) {
+    // Counted from its start, or from when it began loading when it joins a video already playing.
+    if (active && now > Math.max(t.startAt, p.preparedServer) + LOAD_TIMEOUT) {
       // Some TVs can decode only one video at a time: stop the old one, then load the new one again.
       health.loadTimeouts++;
       note((t.video || 'Black screen') + ' not playing ' + LOAD_TIMEOUT / 1000 + ' s after its start: loading it again on its own', true);
@@ -552,7 +578,7 @@
         ', pixel ratio ' + window.devicePixelRatio,
         'in memory: ' + (keepBroken ? 'not supported' : Object.keys(kept).map(function (url) {
           var k = kept[url];
-          return videoName(url) + (k.blobUrl ? '' : k.loading ? ' (downloading)' : ' (failed ' + k.failures + 'x)');
+          return videoName(url) + (k.blobUrl ? '' : k.loading ? ' (downloading)' : k.failures ? ' (failed ' + k.failures + 'x)' : ' (waiting)');
         }).join(', ') || 'nothing'),
       ],
       page: pageId,

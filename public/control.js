@@ -52,7 +52,9 @@ function playlistOf(id) {
 function assigned(id) {
   const list = playlistOf(id);
   const st = state.status && state.status[id];
-  if (list.length > 1 && st && st.online && list.includes(st.video)) return st.video;
+  // In the show, a TV also plays the show's videos: follow what it reports.
+  const inShow = state.mode === 'show' && !state.screens[id].keep;
+  if (st && st.online && st.video && (inShow || (list.length > 1 && list.includes(st.video)))) return st.video;
   return list[0] || null;
 }
 
@@ -156,16 +158,21 @@ function setThumb(thumb, url) {
   empty.hidden = false;
   empty.textContent = url ? '' : 'Black screen';
   if (!url) return;
-  loadThumb(url).then(({ image }) => {
+  const showImage = src => {
     if (thumb.dataset.url !== url) return;
-    if (image) {
-      img.src = image;
-      img.hidden = false;
-      empty.hidden = true;
-    } else {
-      empty.textContent = 'No preview';
-    }
+    img.src = src;
+    img.hidden = false;
+    empty.hidden = true;
+  };
+  // The server's small picture of the video, so the panel doesn't download the videos over the
+  // network the TVs use. Without ffmpeg on the server, take one from the video here instead.
+  const pic = new Image();
+  pic.onload = () => showImage(pic.src);
+  pic.onerror = () => loadThumb(url).then(({ image }) => {
+    if (image) showImage(image);
+    else if (thumb.dataset.url === url) empty.textContent = 'No preview';
   });
+  pic.src = url.replace('/videos/', '/thumbs/');
 }
 
 // ---------- Rendering ----------
@@ -267,8 +274,11 @@ function render() {
   videosKey = key;
   if (videosChanged) {
     fillOptions(allSelect);
+    fillAddOptions($('#show-add'));
     renderLibrary();
   }
+  clockSkew = state.now - Date.now();
+  renderShow();
   allSelect.value = state.all.video || '';
 
   for (const id of Object.keys(state.screens)) {
@@ -323,11 +333,8 @@ function renderLibrary() {
     tile.dataset.name = v.name;
     tile.title = `Play ${v.name} on all TVs`;
     tile.innerHTML = `${THUMB_HTML}<span class="meta"><span class="name">${esc(v.name)}</span><span class="info">${formatSize(v.size)}</span><span class="where"></span></span>`;
-    const url = videoUrl(v.name);
-    setThumb($('.thumb', tile), url);
-    loadThumb(url).then(({ duration }) => {
-      if (duration) $('.info', tile).textContent = `${formatTime(duration)} · ${formatSize(v.size)}`;
-    });
+    setThumb($('.thumb', tile), videoUrl(v.name));
+    if (v.duration) $('.info', tile).textContent = `${formatTime(v.duration)} · ${formatSize(v.size)}`;
     tile.addEventListener('click', () => command({ type: 'all', video: v.name }));
     libraryEl.append(tile);
   }
@@ -351,7 +358,8 @@ function renderStatus() {
   for (const [id, c] of cards) {
     const s = state.status[id] || {};
     // A TV playing several videos: its preview and highlighted video follow what it reports.
-    if (playlistOf(id).length > 1) {
+    const changing = playlistOf(id).length > 1 || (state.mode === 'show' && !state.screens[id].keep);
+    if (changing) {
       renderPlaylist(id, c);
       setThumb(c.thumb, assigned(id) ? videoUrl(assigned(id)) : null);
     }
@@ -387,7 +395,7 @@ function renderStatus() {
           ? ` · <span class="${s.dropped >= 10 ? 'bad' : 'warn'}">${s.dropped}% frames dropped</span>`
           : '';
         // With several videos, say which one is on screen now.
-        const which = playlistOf(id).length > 1 && s.video ? `${esc(s.video)} · ` : '';
+        const which = changing && s.video ? `${esc(s.video)} · ` : '';
         lines.push(`${which}${formatTime(s.time)} / ${formatTime(s.duration)} · ${sync}${dropped}`);
       }
       if (s.soundBlocked) {
@@ -440,6 +448,79 @@ function renderAddresses() {
   if (el.innerHTML !== html) el.innerHTML = html;
 }
 
+// ---------- Show ----------
+
+let clockSkew = 0; // the server's clock minus this computer's, from the last state
+
+function serverTime() {
+  return Date.now() + clockSkew;
+}
+
+// The show's videos when none are chosen: every video, except those of TVs that keep their own.
+function defaultShowVideos() {
+  const kept = new Set(Object.values(state.screens).filter(s => s.keep).flatMap(s => s.playlist || []));
+  return state.videos.map(v => v.name).filter(name => !kept.has(name));
+}
+
+function renderShow() {
+  const panel = $('#show-panel');
+  panel.hidden = state.mode !== 'show';
+  if (panel.hidden) return;
+  const videos = state.show.videos || [];
+  // Any TV that follows the show tells where it is.
+  const follower = Object.keys(state.screens).find(id => !state.screens[id].keep);
+  const plan = follower ? tvwallSchedule.plan(state, follower) : null;
+  const seg = plan && plan.shared ? tvwallSchedule.at(plan, serverTime()) : null;
+
+  const html = videos.length
+    ? videos.map((name, i) => `<span class="item${seg && seg.phase === 'videos' && seg.video === name ? ' now' : ''}">` +
+        `<span class="n">${i + 1}</span>${esc(name)}` +
+        `<button type="button" data-index="${i}" aria-label="Remove ${esc(name)} from the show">×</button></span>`).join('')
+    : '<span class="none">No videos yet: add some, or click All videos</span>';
+  const list = $('#show-videos');
+  if (list.innerHTML !== html) list.innerHTML = html;
+
+  const expo = $('#show-expo');
+  if (document.activeElement !== expo) expo.value = state.show.expoMinutes;
+
+  let now = '';
+  if (!follower) now = 'Every TV keeps its own videos: untick Keep its own videos on the TVs that should follow the show.';
+  else if (!seg) now = videos.length ? "Waiting for the videos' lengths…" : '';
+  else if (seg.phase === 'videos') now = `Now: ${seg.video} (${seg.index + 1} of ${plan.shared.length}) · Expo in ${formatTime((seg.phaseEnd - serverTime()) / 1000)}`;
+  else now = `Now: Expo · the videos start again in ${formatTime((seg.phaseEnd - serverTime()) / 1000)}`;
+  $('#show-now').textContent = now;
+
+  const kept = Object.keys(state.screens).filter(id => state.screens[id].keep);
+  const note = kept.length
+    ? `TV ${kept.join(', ')} ${kept.length > 1 ? 'keep their' : 'keeps its'} own videos throughout (${kept.map(id => esc((state.screens[id].playlist || []).join(', ') || 'black screen')).join('; ')}).`
+    : '<span class="warn">No TV keeps its own videos: tick <b>Keep its own videos</b> on the credits TV to keep it on the credits throughout.</span>';
+  const noteHtml = `${note} In the Expo, each TV plays its own videos, as set on its card below.`;
+  if ($('#show-note').innerHTML !== noteHtml) $('#show-note').innerHTML = noteHtml;
+}
+
+$('#show-add').addEventListener('change', e => {
+  if (!e.target.value) return;
+  command({ type: 'show', videos: [...(state.show.videos || []), e.target.value] });
+  e.target.value = '';
+});
+$('#show-videos').addEventListener('click', e => {
+  const remove = e.target.closest('button[data-index]');
+  if (!remove) return;
+  const videos = [...(state.show.videos || [])];
+  videos.splice(Number(remove.dataset.index), 1);
+  command({ type: 'show', videos });
+});
+$('#show-all').addEventListener('click', () => command({ type: 'show', videos: defaultShowVideos() }));
+$('#show-expo').addEventListener('change', e => {
+  const minutes = Number(e.target.value);
+  if (minutes >= 0 && minutes <= 240) command({ type: 'show', expoMinutes: minutes });
+});
+$('#show-videos-now').addEventListener('click', () => command({ type: 'showSkip', to: 'videos' }));
+$('#show-expo-now').addEventListener('click', () => command({ type: 'showSkip', to: 'expo' }));
+setInterval(() => {
+  if (state && state.mode === 'show') renderShow();
+}, 1000);
+
 // ---------- Crash test ----------
 // Runs on the server, so it goes on when this page is closed. Its log is in the server's logs folder.
 
@@ -456,7 +537,7 @@ const testEls = {
   result: $('#test-result'),
   logs: $('#test-logs'),
   minutes: $('#test-minutes'),
-  commands: $('#test-commands'),
+  level: $('#test-level'),
 };
 const VERDICTS = { ok: ['ok', 'OK'], check: ['warn', 'Check'], problem: ['bad', 'Problem'], off: ['muted', 'Not connected'] };
 
@@ -587,12 +668,14 @@ async function testAction(body) {
 
 $('#test-start').addEventListener('click', () => {
   const length = testEls.minutes.selectedOptions[0].textContent;
-  const commands = testEls.commands.checked;
-  const what = commands
-    ? '\n\nAfter 2 minutes, the wall restarts, plays the same video on all TVs, changes quickly, and reloads the TVs, for about 5 minutes. Then it goes back to what it plays now. Sound is not touched.'
-    : '';
+  const level = testEls.level.value;
+  const what = {
+    hard: '\n\nAfter 2 minutes, for about 10 minutes, the test changes the wall again and again: restart, same video, the show\'s changes, a storm of changes, every connection cut, the server frozen for 3 s, two reloads. Then it puts the wall back as it is now, and watches it until the end. Sound is not touched.',
+    normal: '\n\nAfter 2 minutes, the wall restarts, plays the same video on all TVs, changes quickly, and reloads the TVs, for about 5 minutes. Then it goes back to what it plays now. Sound is not touched.',
+    watch: '',
+  }[level];
   if (!confirm(`Start a ${length} test?${what}\n\nDon't change the wall until it's done.`)) return;
-  testAction({ action: 'start', minutes: Number(testEls.minutes.value), commands });
+  testAction({ action: 'start', minutes: Number(testEls.minutes.value), level });
 });
 $('#test-stop').addEventListener('click', () => {
   if (confirm('Stop the test? Its log is kept, and the wall goes back to what it played before.')) testAction({ action: 'stop' });
