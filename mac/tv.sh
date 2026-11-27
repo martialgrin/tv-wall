@@ -26,10 +26,14 @@ done
 
 for app in "Google Chrome" "Brave Browser" "Chromium" "Microsoft Edge"; do
   if [ -d "/Applications/$app.app" ]; then
+    # The last three keep the video smooth even when the browser thinks its window is hidden (another
+    # window on top, the screen dimming): otherwise it slows the page down and the video stutters.
     open -na "$app" --args --user-data-dir="$profile" --kiosk --autoplay-policy=no-user-gesture-required \
       --no-first-run --no-default-browser-check --noerrdialogs --disable-infobars \
       --disable-session-crashed-bubble --hide-crash-restore-bubble --disable-features=Translate \
-      --overscroll-history-navigation=0 "$url"
+      --overscroll-history-navigation=0 \
+      --disable-background-timer-throttling --disable-renderer-backgrounding --disable-backgrounding-occluded-windows \
+      "$url"
     echo "TV $tv is open full-screen in $app: $url (Cmd+Q to leave)"
     exit 0
   fi

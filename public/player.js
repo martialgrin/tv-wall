@@ -14,6 +14,7 @@
   var PRELOAD = 3000;       // ms before a playlist's next video starts, begin loading it in the background
   var KEEP_TIMEOUT = 300000; // give up downloading a video into memory after this long, and try again later
   var KEEP_MAX = 150e6;      // bytes: keep this TV's own videos in memory when they add up to no more than this
+  var START_SETTLE = 1500;   // ms after a video starts before measuring how far off it is (and correcting it)
   var MEDIA_ERRORS = {
     1: 'loading was interrupted',
     2: 'network error while downloading it',
@@ -401,8 +402,10 @@
     } else {
       note('Joined ' + p.target.video + ' at ' + el.currentTime.toFixed(1) + ' s' + loading);
     }
-    // Started from the beginning: measure how late it got going, once it has settled.
-    active = { el: el, target: p.target, learnAt: p.fromStart ? performance.now() + 300 : 0 };
+    // Started from the beginning: measure how late it got going, once it has settled. The Android
+    // displays report a video's position late for its first second or so (it reads behind, then
+    // jumps ahead): measuring sooner taught them to start ever earlier, about 200 ms ahead of the others.
+    active = { el: el, target: p.target, learnAt: p.fromStart ? performance.now() + START_SETTLE : 0 };
     el.classList.add('on');
     if (old && old.el !== el) unload(old.el);
     lastError = null;
