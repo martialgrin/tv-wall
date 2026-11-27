@@ -14,11 +14,11 @@ Your Mac runs a small server. Each TV has a Raspberry Pi 5 on its HDMI input, wh
                               └── Pi → TV 8   http://<mac-name>.local:3000/8
 ```
 
-No packages to install: you only need [Node.js](https://nodejs.org) 18 or newer, and [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`). The server uses ffmpeg to measure each video's length, so a TV with several videos knows when to move on to the next one, and to make the pictures for the phone remote.
+No packages to install: you only need [Node.js](https://nodejs.org) 18 or newer, and [ffmpeg](https://ffmpeg.org) (`brew install ffmpeg`). The server uses ffmpeg to measure each video's length, so a TV with several videos knows when to move on to the next one, and to make the pictures for the phone remote. Without ffmpeg, it reads the length of MP4 and MOV files from the files themselves, and says so in the Terminal when it starts.
 
 ## 1. Start the server
 
-The code is in a private GitHub repository, without the videos (too big for git). On a new Mac, such as the Mac mini, install [Node](https://nodejs.org) and ffmpeg (`brew install ffmpeg`), then:
+The code is in a public GitHub repository, without the videos (too big for git). On a new Mac, such as the Mac mini, install [Node](https://nodejs.org) and ffmpeg (`brew install ffmpeg`), then:
 
 ```bash
 git clone https://github.com/martialgrin/tv-wall.git
@@ -259,7 +259,7 @@ The current choices are saved in `state.json`, so a restart of the Mac or the se
 | *Can't play …* on a TV | The TV can't decode that file (often 4K or ProRes). Convert it with `./convert.sh`. The exact reason also appears in the Terminal where the server runs. |
 | A TV follows commands a second late | Some browsers hold back live updates. The TV then picks up each change from its own once-a-second report instead, so it switches up to a second later but stays in sync. Nothing to fix. |
 | *ms off, correcting* never settles, or the picture keeps jumping | Convert the video with `./convert.sh`: without a keyframe every second, some TVs take seconds to jump to the right point. If the TV is rotated in the panel, try it at 0°. Hovering the TV's dot in the panel shows how long its jumps and starts take; each TV learns both and allows for them. |
-| A TV with several videos only plays the first one | The server couldn't measure the videos' lengths: ffmpeg isn't installed (`brew install ffmpeg`, then restart the server), or a file is damaged (convert it with `./convert.sh`). |
+| A TV with several videos only plays the first one, or the Android displays fall behind for a few seconds each time a single video starts again | The server couldn't measure the videos' lengths: a file isn't MP4 or MOV and ffmpeg isn't installed (`brew install ffmpeg`, then restart the server), or a file is damaged (convert it with `./convert.sh`). The TVs then loop each video on their own, which the Android displays do slowly. |
 | *Open on 2 devices* on a TV card | The same TV address is open in two places, for example on the TV and in a tab on your Mac. Close the extra one: their reports mix. |
 
 ## Files

@@ -76,8 +76,10 @@ function duration(name, version) {
     durations.set(key, null);
     const args = ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', path.join(VIDEOS_DIR, name)];
     execFile(fs.existsSync(FFPROBE) ? FFPROBE : 'ffprobe', args, { timeout: 15000 }, (err, stdout) => {
-      const seconds = parseFloat(stdout);
-      durations.set(key, !err && seconds > 0 ? seconds : 0);
+      let seconds = parseFloat(stdout);
+      // Without ffprobe (ffmpeg not installed), read it from the file itself.
+      if (err || !(seconds > 0)) seconds = mp4Duration(path.join(VIDEOS_DIR, name)) || 0;
+      durations.set(key, seconds > 0 ? seconds : 0);
       if (seconds > 0) {
         changed();
         broadcast('state', snapshot());
@@ -85,6 +87,52 @@ function duration(name, version) {
     });
   }
   return durations.get(key) || null;
+}
+
+// The length of an MP4 or MOV file, from the "mvhd" box in its header: for when ffprobe isn't
+// installed. null for any other kind of file.
+function mp4Duration(file) {
+  let fd;
+  try {
+    fd = fs.openSync(file, 'r');
+    const size = fs.fstatSync(fd).size;
+    const head = Buffer.alloc(16);
+    let pos = 0;
+    while (pos + 8 <= size) {
+      fs.readSync(fd, head, 0, 16, pos);
+      let boxSize = head.readUInt32BE(0);
+      let headerSize = 8;
+      if (boxSize === 1) {
+        boxSize = Number(head.readBigUInt64BE(8)); // a box over 4 GB
+        headerSize = 16;
+      } else if (boxSize === 0) {
+        boxSize = size - pos; // runs to the end of the file
+      }
+      if (boxSize < headerSize) return null;
+      if (head.toString('latin1', 4, 8) === 'moov') {
+        const moov = Buffer.alloc(Math.min(boxSize - headerSize, 64e6));
+        fs.readSync(fd, moov, 0, moov.length, pos + headerSize);
+        for (let p = 0; p + 8 <= moov.length;) {
+          const childSize = moov.readUInt32BE(p);
+          if (moov.toString('latin1', p + 4, p + 8) === 'mvhd') {
+            const v1 = moov[p + 8] === 1; // version 1 has 64-bit times
+            const timescale = moov.readUInt32BE(p + (v1 ? 28 : 20));
+            const length = v1 ? Number(moov.readBigUInt64BE(p + 32)) : moov.readUInt32BE(p + 24);
+            return timescale > 0 && length > 0 ? length / timescale : null;
+          }
+          if (childSize < 8) return null;
+          p += childSize;
+        }
+        return null;
+      }
+      pos += boxSize;
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
 }
 
 function serveVideo(req, res, encodedName) {
@@ -391,6 +439,7 @@ function handleReport(body, req) {
     // A new id each time the TV page loads, and its counters since then (Wi-Fi, stalls…): read by the crash test.
     page: body.page ? String(body.page).slice(0, 20) : null,
     up: Number(body.up) || 0,
+    from,
     health: numbersOnly(body.health),
     error,
     at: Date.now(),
@@ -641,6 +690,7 @@ function testCommand(cmd) {
   }
   if (cmd.type === 'reload') {
     test.reloadAt = Date.now();
+    test.reloadPages = Object.fromEntries(screenIds.map(id => [id, reports[id] ? reports[id].page : null]));
     settleFrom(Date.now());
   } else {
     test.wallChanged = true;
@@ -689,7 +739,7 @@ function settleFrom(at) {
 function newTv() {
   return {
     seen: false, online: false, offlineAt: 0, offline: 0, offlineMs: 0,
-    page: null, health: null, hasHealth: false, oldPage: false, restarts: 0, unexpectedRestarts: 0,
+    pages: {}, healths: {}, hasHealth: false, oldPage: false, restarts: 0, unexpectedRestarts: 0, // pages and counters per device
     counts: Object.fromEntries(TV_COUNTERS.map(k => [k, 0])),
     steps: {}, maxDevices: 0, error: null, badSince: 0, badNoted: false, heapFirst: null, heapLast: null,
   };
@@ -755,26 +805,29 @@ function sampleTest() {
     tv.online = s.online;
     if (!s.online && tv.seen && !restartExpected) tv.offlineMs += 1000;
 
-    // A new page id: the TV page restarted. Expected after "Reload TVs"; otherwise it crashed,
-    // lost power, or someone reloaded it.
-    if (s.page && tv.page && s.page !== tv.page) {
+    // A new page id from the same device: the TV page restarted. Expected after "Reload TVs";
+    // otherwise it crashed, lost power, or someone reloaded it. Kept per device, so a TV number open
+    // on two devices at once (their reports take turns) doesn't look like restarts.
+    const from = s.from || '';
+    const lastPage = tv.pages[from];
+    if (s.page && lastPage && s.page !== lastPage) {
       tv.restarts++;
       if (!restartExpected) tv.unexpectedRestarts++;
-      testEvent(id, restartExpected ? 'TV page reloaded' : 'TV page restarted by itself', { warn: !restartExpected });
+      testEvent(id, restartExpected ? 'TV page reloaded' : `TV page restarted by itself (${from})`, { warn: !restartExpected });
     }
     // The TV's counters since its page loaded: add what's new since the last sample.
     const h = s.health;
     if (h && s.page) {
       tv.hasHealth = true;
-      const prev = s.page === tv.page ? tv.health : tv.page ? {} : null; // first sight: only a starting point
+      const prev = s.page === lastPage ? tv.healths[from] : lastPage ? {} : null; // first sight: only a starting point
       if (prev) for (const k of TV_COUNTERS) tv.counts[k] += Math.max(0, (h[k] || 0) - (prev[k] || 0));
-      tv.health = h;
+      tv.healths[from] = h;
       if (h.heapMB) {
         if (tv.heapFirst === null) tv.heapFirst = h.heapMB;
         tv.heapLast = h.heapMB;
       }
     }
-    if (s.page) tv.page = s.page;
+    if (s.page) tv.pages[from] = s.page;
     if (s.online && !s.page) tv.oldPage = true;
     if (s.devices.length > tv.maxDevices) {
       if (s.devices.length > 1) testEvent(id, `Open on ${s.devices.length} devices at once: ${s.devices.join(', ')}`, { warn: true });
@@ -818,9 +871,11 @@ function sampleTest() {
     }
 
     // After a command, measure how long until the TV is in sync again, and count its sync only from then.
+    // After "Reload TVs", that's once the reloaded page plays, not the old one still reporting.
     let measuring = true;
     if (test.settleFrom !== null) {
-      if (!acc.settled && now >= test.settleFrom && ok) {
+      const reloaded = step.key !== 'reload' || !s.page || s.page !== (test.reloadPages || {})[id];
+      if (!acc.settled && now >= test.settleFrom && ok && reloaded) {
         acc.settled = true;
         acc.settleMs = now - test.settleFrom;
       }
@@ -1323,4 +1378,10 @@ server.listen(PORT, () => {
   for (const id of screenIds) console.log(`  TV ${id.padEnd(13)}http://${host}:${PORT}/${id}`);
   if (hosts.length) console.log(`\n  By address instead of name: http://${hosts.join(`:${PORT}/, http://`)}:${PORT}/ (changes with the network)`);
   console.log(`\n  Videos folder   ${VIDEOS_DIR} (${listVideos().length} videos)\n`);
+  execFile(FFMPEG, ['-version'], { timeout: 5000 }, err => {
+    if (err) {
+      console.log('  ffmpeg is not installed (brew install ffmpeg, then restart the server). Until then, the');
+      console.log('  phone remote has no pictures of the videos, and only MP4 and MOV files can be measured.\n');
+    }
+  });
 });
